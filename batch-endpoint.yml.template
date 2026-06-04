@@ -1,0 +1,13 @@
+$schema: https://azuremlschemas.azureedge.net/latest/batchEndpoint.schema.json
+
+# NOTE: invoke_batch_endpoint.py overrides this `name` at runtime with a
+# unique per-run value (BATCH_ENDPOINT_PREFIX + 8-hex suffix). The value
+# below is only used if you create the endpoint manually via:
+#   az ml batch-endpoint create --file batch-endpoint.yml \
+#                               --resource-group <rg> --workspace-name <ws>
+name: my-batch-endpoint
+
+# auth_mode options:
+#   aad_token  - caller's Azure AD token (recommended, used by the Python script)
+#   key        - shared key (simpler but harder to rotate)
+auth_mode: aad_token

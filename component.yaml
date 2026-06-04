@@ -1,0 +1,24 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
+
+type: command
+
+name: hello_world_batch_component
+display_name: Hello World Batch Component
+version: 3
+
+code: ./
+
+command: >-
+  python score.py
+  --input_data ${{inputs.input_data}}
+  --output_predictions ${{outputs.output_predictions}}
+
+environment: azureml://registries/azureml/environments/sklearn-1.5/labels/latest
+
+inputs:
+  input_data:
+    type: uri_file
+
+outputs:
+  output_predictions:
+    type: uri_folder

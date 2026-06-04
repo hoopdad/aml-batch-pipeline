@@ -1,0 +1,22 @@
+batch_invoke_*.log
+batch_invoke_*.analysis.md
+.env
+
+# Project-specific files containing workspace/endpoint identifiers.
+# Use the *.template versions as a starting point and copy them locally.
+batch-endpoint.yml
+batch-deployment.yml
+
+# Personal scratch scripts (equivalent commands documented in README.md)
+scripts.txt
+file.ps1
+
+# Build artifacts
+*.zip
+
+# Common Python clutter
+__pycache__/
+*.pyc
+.venv/
+venv/
+

@@ -1,0 +1,38 @@
+$schema: https://azuremlschemas.azureedge.net/latest/batchDeployment.schema.json
+
+# NOTE: invoke_batch_endpoint.py overrides `name` and `endpoint_name` at
+# runtime so the deployment is attached to the freshly-created endpoint.
+# The values below are only used if you create the deployment manually:
+#   az ml batch-deployment create --file batch-deployment.yml --set-default \
+#                                 --resource-group <rg> --workspace-name <ws>
+name: my-batch-deployment
+endpoint_name: my-batch-endpoint
+
+type: model
+
+# Reference to a model already registered in the workspace.
+# Format: azureml:<model-name>:<version>
+# Register a placeholder model (e.g. for this dummy scoring script) with:
+#   az ml model create --name dummy-batch-model --version 1 \
+#                      --path ./dummy_model.txt \
+#                      --resource-group <rg> --workspace-name <ws>
+model: azureml:dummy-batch-model:1
+
+# `code` is the local folder containing the scoring script. The current
+# directory ships score.py which the included component.yaml also uses.
+code_configuration:
+  code: .
+  scoring_script: score.py
+
+# Environment the scoring container runs in. The base image is a stock
+# Azure ML curated image; conda.yml in this repo adds pandas on top.
+environment:
+  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:latest
+  conda_file: conda.yml
+
+# Compute cluster the deployment runs on. Must already exist in the
+# workspace. Create one with:
+#   az ml compute create --name cpu-cluster --type amlcompute \
+#                        --size Standard_DS3_v2 --min-instances 0 --max-instances 2 \
+#                        --resource-group <rg> --workspace-name <ws>
+compute: azureml:cpu-cluster
