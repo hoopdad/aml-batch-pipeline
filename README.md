@@ -68,19 +68,28 @@ commands below all assume `RG=<your-resource-group>` and
      --resource-group $RG --workspace-name $WS
    ```
 5. **Storage permissions for the cluster** — the compute cluster's managed
-   identity needs `Storage Blob Data Contributor` on the workspace's
-   default storage account so it can read inputs and write outputs:
+   identity needs **three** roles on the workspace's default storage
+   account: `Storage Blob Data Contributor` (for inputs/outputs),
+   `Storage Table Data Contributor`, and `Storage Queue Data Contributor`
+   (the last two are required because Azure ML's batch scoring engine
+   coordinates mini-batches via Azure Tables + Queues — without them
+   every batch job fails at startup with a generic "private network /
+   authorization failure" error):
    ```powershell
    $PRINCIPAL_ID = az ml compute show --name cpu-cluster `
        --resource-group $RG --workspace-name $WS `
        --query "identity.principal_id" -o tsv
    $STORAGE_ID = az ml workspace show --name $WS --resource-group $RG `
        --query "storage_account" -o tsv
-   az role assignment create `
-       --assignee-object-id $PRINCIPAL_ID `
-       --assignee-principal-type ServicePrincipal `
-       --role "Storage Blob Data Contributor" `
-       --scope $STORAGE_ID
+   foreach ($role in @("Storage Blob Data Contributor",
+                        "Storage Table Data Contributor",
+                        "Storage Queue Data Contributor")) {
+       az role assignment create `
+           --assignee-object-id $PRINCIPAL_ID `
+           --assignee-principal-type ServicePrincipal `
+           --role $role `
+           --scope $STORAGE_ID
+   }
    ```
 
 ### Local side
@@ -223,6 +232,14 @@ Everything produced by one run shares an 8-hex suffix:
   documented in the **Prerequisites** section above
 - `*.zip`, `__pycache__/`, `.venv/`, `venv/`
 
+`.amlignore` (committed) is the Azure ML-equivalent of `.gitignore` and
+controls what gets uploaded as the **deployment's code snapshot**. It is
+deliberately stricter than `.gitignore` — it excludes `.git/`, README,
+template files, and the orchestration scripts so the scoring container
+only receives `score.py` + `conda.yml`. Azure ML uses `.amlignore` if
+present; otherwise it falls back to `.gitignore` (which doesn't cover
+`.git/` and will leak local git history into workspace storage).
+
 ## How the SDK actually talks to Azure (TL;DR)
 
 The Azure ML SDK splits its traffic across two planes:
@@ -246,6 +263,8 @@ for that specific log.
 | `Default credential failed` → falls back to browser | Run `az login` once; you can also set `AZURE_TENANT_ID` if you're in multiple tenants. |
 | Deployment fails with "compute not found" | Edit `batch-deployment.yml` to reference your actual compute cluster name (or create `cpu-cluster` per the Prerequisites). |
 | Deployment fails reading the input | Cluster's managed identity is missing `Storage Blob Data Contributor` — see Prerequisites step 5. |
+| Batch job fails at startup with "Failed to create table/queue ... authorization failure" or "private network" error | Cluster's managed identity is missing `Storage Table Data Contributor` and/or `Storage Queue Data Contributor`. Azure ML's parallel-run engine needs both. See Prerequisites step 5. |
+| `.git/` or other local junk ends up in the deployment's code snapshot | `.gitignore` is honored by Azure ML uploads but does NOT exclude `.git/` itself. The included `.amlignore` is the right place to list everything that should be skipped from the code snapshot. |
 | `INPUT_DATA_ASSET` not found | Register the asset (Prerequisites step 4) or update `.env` to point at one that exists. |
 | Endpoint name collisions | Endpoint names are auto-generated per run; you'll only see collisions if you set the same suffix manually. Bump `BATCH_ENDPOINT_PREFIX` if needed. |
 | Orphan endpoints from interrupted runs | `python cleanup_batch_endpoints.py --dry-run` to inspect, then drop `--dry-run` to delete. |

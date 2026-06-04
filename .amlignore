@@ -1,0 +1,38 @@
+# .amlignore — controls what gets uploaded as the deployment's `code:`
+# snapshot. Same syntax as .gitignore. Azure ML uses this file if present,
+# otherwise falls back to .gitignore (which does NOT cover .git/ itself —
+# that was the gap that leaked pre-purge git objects into workspace storage).
+
+# Git internals — NEVER needed at runtime, and contain reachable history
+.git/
+
+# Local secrets and personal configs
+.env
+batch-endpoint.yml
+batch-deployment.yml
+scripts.txt
+file.ps1
+
+# Run artifacts and analysis output
+batch_invoke_*.log
+batch_invoke_*.analysis.md
+
+# Build artifacts and Python clutter
+*.zip
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Template files — only used during setup, not at runtime
+*.template
+
+# Documentation and orchestration scripts — not needed inside the scorer
+README.md
+analyze.ps1
+cleanup_batch_endpoints.py
+invoke_batch_endpoint.py
+component.yaml
+
+# Sample data — referenced as a registered data asset, not via code snapshot
+input/

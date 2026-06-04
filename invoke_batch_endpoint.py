@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 import uuid
@@ -67,6 +68,46 @@ POLL_TIMEOUT_MINUTES  = 60
 PROFILE_LOG_FILE = f"batch_invoke_{_run_suffix}.log"
 MAX_BODY_PREVIEW = 2000  # chars/bytes printed inline
 
+
+class RedactingFilter(logging.Filter):
+    """Strip secrets out of azure-core log records before they're written.
+
+    Azure's HttpLoggingPolicy redacts Authorization/SAS tokens at INFO level,
+    but the lower-level azure.core.pipeline.policies._universal DEBUG logger
+    emits full bearer tokens and full SAS query strings. This filter masks
+    them post-format so neither the file log nor stdout ever contains them.
+    """
+
+    _patterns = [
+        # 'Authorization': 'Bearer eyJ...'  (header dict dump form)
+        (re.compile(r"(['\"]Authorization['\"]\s*:\s*['\"])[^'\"]+(['\"])"),
+         r"\1<REDACTED>\2"),
+        # Authorization: Bearer eyJ...  (raw header form)
+        (re.compile(r"(Authorization:\s*Bearer\s+)\S+"),
+         r"\1<REDACTED>"),
+        # Bare bearer tokens that survive the above (paranoia)
+        (re.compile(r"(Bearer\s+)[A-Za-z0-9._\-]{40,}"),
+         r"\1<REDACTED>"),
+        # SAS query-string secrets + ARM LRO continuation tokens (t/c/s/h
+        # carry signed payloads with embedded certs). api-version stays
+        # visible because it's public and useful for debugging.
+        (re.compile(r"([?&](?:sig|skoid|sktid|sks|sv|sp|skv|st|se|sr|ske|skt|t|c|s|h)=)[^&'\"\s]+"),
+         r"\1<REDACTED>"),
+    ]
+
+    def filter(self, record):
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        for pat, repl in self._patterns:
+            msg = pat.sub(repl, msg)
+        # Replace the record's payload so the formatter doesn't re-interpolate args
+        record.msg = msg
+        record.args = ()
+        return True
+
+
 _azure_logger = logging.getLogger("azure")
 _azure_logger.setLevel(logging.DEBUG)
 _file_handler = logging.FileHandler(PROFILE_LOG_FILE, mode="w", encoding="utf-8")
@@ -74,6 +115,7 @@ _file_handler.setLevel(logging.DEBUG)
 _file_handler.setFormatter(
     logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 )
+_file_handler.addFilter(RedactingFilter())
 _azure_logger.addHandler(_file_handler)
 _azure_logger.propagate = False
 
