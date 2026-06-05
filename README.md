@@ -21,7 +21,7 @@ Useful when you want to:
 .
 ├── invoke_batch_endpoint.py     # main: create endpoint+deployment, invoke, poll, cleanup
 ├── cleanup_batch_endpoints.py   # one-shot: delete every batch endpoint in the workspace
-├── analyze.ps1                  # post-run: turn an HTTP log into a markdown report via copilot CLI
+├── analyze.ps1                  # post-run: copilot CLI turns an HTTP log into a markdown report + .drawio diagram
 ├── file1.ps1                    # one-time setup: grant cluster MI the four Storage roles batch scoring needs
 │
 ├── score.py                     # batch deployment scoring script (PRS contract: init() + run())
@@ -106,7 +106,16 @@ commands below all assume `RG=<your-resource-group>` and
 - **(Optional) GitHub Copilot CLI** (`copilot` on `PATH`) — only needed
   to run `analyze.ps1`. Without it, the raw `batch_invoke_*.log` files
   are still useful on their own.
+- **(Optional) drawio-ninja** — required only for `analyze.ps1`'s
+  diagram pass. Install once:
+  ```powershell
+  git clone https://github.com/simonpo/drawio-ninja "$env:USERPROFILE\.copilot\m-skills\drawio-ninja"
+  ```
+  Override the location by setting `$env:DRAWIO_NINJA_DIR`. Skip the
+  diagram pass entirely with `analyze.ps1 -NoDiagram`.
 - **PowerShell 5.1+ or PowerShell 7** for `analyze.ps1`.
+- **Python 3.6+** on `PATH` — used by drawio-ninja's stdlib-only
+  `validate.py` after each diagram pass.
 
 ## Setup
 
@@ -197,10 +206,17 @@ log file also includes the SDK's full headers via Azure's
 ```powershell
 .\analyze.ps1                                            # most recent log
 .\analyze.ps1 -LogFile .\batch_invoke_3f9c1a7b.log       # a specific log
+.\analyze.ps1 -NoDiagram                                 # markdown only
 ```
 
 Pipes a structured prompt + the log file path to `copilot -p` and writes
-the answer to `batch_invoke_<suffix>.analysis.md`. The markdown report
+two files per run:
+
+- `batch_invoke_<suffix>.analysis.md` — the markdown report
+- `batch_invoke_<suffix>.diagram.drawio` — a draw.io diagram of the
+  client VM → remote-service call graph (skip with `-NoDiagram`)
+
+The markdown report
 includes:
 
 - A one-sentence callout of **the single actual invoke call** vs the
@@ -235,13 +251,14 @@ Everything produced by one run shares an 8-hex suffix:
 | Azure ML deployment | `dep-3f9c1a7b` | Cascade-deleted with the endpoint |
 | Local HTTP log | `batch_invoke_3f9c1a7b.log` | Gitignored |
 | Local analysis | `batch_invoke_3f9c1a7b.analysis.md` | Produced by `analyze.ps1`, gitignored |
+| Local diagram | `batch_invoke_3f9c1a7b.diagram.drawio` | Produced by `analyze.ps1` (omit with `-NoDiagram`), gitignored |
 
 ## Files that are gitignored
 
 - `.env` — credentials and workspace identifiers
 - `batch-endpoint.yml`, `batch-deployment.yml` — your customized copies
   (templates are tracked)
-- `batch_invoke_*.log`, `batch_invoke_*.analysis.md` — run output
+- `batch_invoke_*.log`, `batch_invoke_*.analysis.md`, `*.drawio` — run output
 - `scripts.txt`, `file.ps1` — personal scratch scripts; equivalents are
   documented in the **Prerequisites** section above
 - `*.zip`, `__pycache__/`, `.venv/`, `venv/`
@@ -327,6 +344,8 @@ convert the workload to a pipeline job with a command component.
 | Endpoint name collisions | Endpoint names are auto-generated per run; you'll only see collisions if you set the same suffix manually. Bump `BATCH_ENDPOINT_PREFIX` if needed. |
 | Orphan endpoints from interrupted runs | `python cleanup_batch_endpoints.py --dry-run` to inspect, then drop `--dry-run` to delete. |
 | `analyze.ps1` says "copilot not found" | Install [GitHub Copilot CLI](https://github.com/github/gh-copilot) and ensure `copilot` is on `PATH`. The raw log file is still usable without it. |
+| `analyze.ps1` warns "drawio-ninja rules not found" | Install [drawio-ninja](https://github.com/simonpo/drawio-ninja) (see Prerequisites) or pass `-NoDiagram`. The markdown report is still produced. |
+| `analyze.ps1` exits with "Diagram failed final validation" | The generated `.drawio` failed `validate.py`. Re-run; the diagram pass loops on validation but occasionally needs a second attempt. Pass `-NoDiagram` to bypass if blocking you. |
 
 ## For AI agents working on this repo
 

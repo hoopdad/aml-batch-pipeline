@@ -1,29 +1,43 @@
 <#
 .SYNOPSIS
     Run GitHub Copilot CLI against a batch_invoke HTTP profiling log to
-    produce a markdown summary of every request the Azure ML SDK made.
+    produce a markdown summary of every request the Azure ML SDK made, and
+    (by default) a draw.io diagram of the client → remote-service call graph.
 
 .DESCRIPTION
     Wraps `copilot -p <prompt>` so you can reproduce on demand the same
     "what hostnames and paths did the SDK actually hit" report that was
-    generated interactively. Output filename mirrors the input log:
+    generated interactively. Output filenames mirror the input log:
 
         batch_invoke_<suffix>.log  ->  batch_invoke_<suffix>.analysis.md
+                                       batch_invoke_<suffix>.diagram.drawio
 
     If no -LogFile is supplied, the most recently modified
     batch_invoke_*.log in the current directory is analyzed.
 
+    Diagram generation uses the bundled simonpo/drawio-ninja instructions.
+    Default install location is:
+        $env:USERPROFILE\.copilot\m-skills\drawio-ninja\
+    Override with the DRAWIO_NINJA_DIR environment variable. The script
+    runs validate.py against the output. Pass -NoDiagram to skip.
+
 .PARAMETER LogFile
     Path to the HTTP profiling log file produced by invoke_batch_endpoint.py.
+
+.PARAMETER NoDiagram
+    Skip the second copilot pass that generates the .drawio diagram.
 
 .EXAMPLE
     .\analyze.ps1
     .\analyze.ps1 -LogFile .\batch_invoke_3f9c1a7b.log
+    .\analyze.ps1 -NoDiagram
 #>
 
 param(
     [Parameter(Position = 0)]
-    [string]$LogFile
+    [string]$LogFile,
+
+    [switch]$NoDiagram
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,6 +64,18 @@ $resolved = (Resolve-Path $LogFile).Path
 $prefix   = [IO.Path]::GetFileNameWithoutExtension($resolved)
 $dir      = [IO.Path]::GetDirectoryName($resolved)
 $outFile  = Join-Path $dir "$prefix.analysis.md"
+$drawio   = Join-Path $dir "$prefix.diagram.drawio"
+
+# Bundled drawio-ninja assets. Default: ~/.copilot/m-skills/drawio-ninja/
+# Override with the DRAWIO_NINJA_DIR environment variable.
+$drawioNinjaDir = if ($env:DRAWIO_NINJA_DIR) {
+    $env:DRAWIO_NINJA_DIR
+} else {
+    Join-Path $env:USERPROFILE ".copilot\m-skills\drawio-ninja"
+}
+$drawioRules     = Join-Path $drawioNinjaDir "drawio.instructions.md"
+$drawioValidator = Join-Path $drawioNinjaDir "validate.py"
+$drawioExample   = Join-Path $drawioNinjaDir "examples\azure-architecture.drawio"
 
 # --- The prompt -----------------------------------------------------------
 $prompt = @"
@@ -119,7 +145,7 @@ Write-Host "Analyzing : $resolved"
 Write-Host "Writing   : $outFile"
 Write-Host ""
 
-copilot -p $prompt | Out-File -FilePath $outFile -Encoding utf8
+copilot -p $prompt --allow-all-tools --add-dir "$dir" | Out-File -FilePath $outFile -Encoding utf8
 
 if ($LASTEXITCODE -ne 0) {
     Write-Error "copilot exited with code $LASTEXITCODE"
@@ -128,3 +154,95 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 Write-Host "Done. Analysis written to: $outFile"
+
+# --- Diagram generation (optional second pass) ----------------------------
+if ($NoDiagram) {
+    Write-Host "Skipping diagram generation (-NoDiagram)."
+    exit 0
+}
+
+if (-not (Test-Path $drawioRules)) {
+    Write-Warning "drawio-ninja rules not found at: $drawioRules"
+    Write-Warning "Install with:"
+    Write-Warning "  git clone https://github.com/simonpo/drawio-ninja `"$drawioNinjaDir`""
+    Write-Warning "Or set the DRAWIO_NINJA_DIR environment variable to your install. Pass -NoDiagram to skip. Skipping diagram."
+    exit 0
+}
+
+Write-Host ""
+Write-Host "Generating diagram : $drawio"
+Write-Host ""
+
+$diagramPrompt = @"
+You are generating a draw.io (.drawio) XML diagram from an Azure ML batch
+endpoint HTTP analysis report.
+
+Read these three files first:
+
+  ANALYSIS REPORT : $outFile
+  DRAWIO RULES    : $drawioRules
+  EXAMPLE         : $drawioExample
+
+Write a complete, structurally-valid .drawio file to this absolute path
+(use your file-write tool; do not just print XML to stdout):
+
+  $drawio
+
+The diagram must show:
+
+  - One "Client Application" vertex on the left, labelled with the source
+    script name (invoke_batch_endpoint.py) and a note that it runs on a
+    local VM using the azure-ai-ml SDK + DefaultAzureCredential.
+  - One vertex per distinct remote host called in the analysis, stacked
+    vertically on the right in chronological order of first contact.
+    Show the hostname on each service vertex.
+  - One unidirectional edge from the Client to each service. Each edge
+    label must include:
+      * step number (1, 2, 3, ...)
+      * the high-level function being performed
+        (e.g. authentication, control plane, asset upload, invoke)
+      * the specific SDK method names or HTTP operations involved
+        (e.g. DefaultAzureCredential.get_token,
+        ml_client.batch_endpoints.begin_create_or_update,
+        POST /jobs)
+  - Highlight the actual data-plane invoke call with a red, bold edge.
+
+Follow ALL rules in DRAWIO RULES. Critical reminders:
+  - Start the file with: <?xml version="1.0" encoding="UTF-8"?>
+  - Use page="0" (infinite canvas).
+  - Include root cells id="0" and id="1".
+  - All cell IDs unique sequential integers; vertices before edges.
+  - Inside value="..." attributes, use only <br/> for line breaks
+    (no <b>, <i>, or any other HTML tag) and &#xa; for newlines in
+    multi-line edge labels.
+
+After writing the file, validate it by running:
+
+  python "$drawioValidator" "$drawio"
+
+If the validator reports any errors, FIX the file and re-validate.
+Keep iterating until you see "VALID". Do not stop until validation
+passes.
+
+When done, print a single line: DIAGRAM_OK
+"@
+
+$drawioSkillDir = $drawioNinjaDir
+copilot -p $diagramPrompt --allow-all-tools --add-dir "$dir" --add-dir "$drawioSkillDir"
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "copilot exited with code $LASTEXITCODE during diagram generation."
+    exit $LASTEXITCODE
+}
+
+# Final independent validation pass
+Write-Host ""
+Write-Host "Final validation pass..."
+python "$drawioValidator" "$drawio"
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Diagram failed final validation: $drawio"
+    exit $LASTEXITCODE
+}
+
+Write-Host ""
+Write-Host "Done. Diagram written to: $drawio"
