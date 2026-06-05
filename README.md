@@ -24,7 +24,8 @@ Useful when you want to:
 ├── analyze.ps1                  # post-run: turn an HTTP log into a markdown report via copilot CLI
 ├── file1.ps1                    # one-time setup: grant cluster MI the four Storage roles batch scoring needs
 │
-├── score.py                     # toy scoring script: stamps "approved" on every row
+├── score.py                     # batch deployment scoring script (PRS contract: init() + run())
+├── score_component.py           # alternative scorer following the Command Component contract
 ├── component.yaml               # AML component definition for score.py
 ├── conda.yml                    # conda env layered onto the curated base image
 ├── dummy_model.txt              # placeholder file you register as the "model"
@@ -269,6 +270,48 @@ The Azure ML SDK splits its traffic across two planes:
 Run `analyze.ps1` after any run and you'll get this breakdown computed
 for that specific log.
 
+## Two different scoring contracts (don't mix them up)
+
+Azure ML has two distinct programming models for "run my Python script
+against some data", and they use **completely different argument
+contracts**. This repo includes one example of each.
+
+### Batch deployment (`score.py`)
+
+Used by `batch-deployment.yml` and invoked through `ml_client.batch_endpoints.invoke()`.
+Runs on the **Parallel Run Step (PRS)** engine.
+
+- Your script **must** define `init()` and `run(mini_batch)` callbacks.
+- Do **NOT** define your own `argparse` — the PRS driver injects a fixed
+  set of arguments (`--model`, `--batch_endpoint_enabled`,
+  `--mini_batch_size`, `--input_asset_job_data_path`, ...) and any
+  unrecognized arg crashes with `SystemExit 2` and a confusing
+  `usage: main.py [-h]...` error in the user logs.
+- `mini_batch` is a list of file paths (for `UriFile`/`UriFolder` inputs)
+  or a pandas DataFrame (for `MLTable` inputs).
+- The return value of `run()` is appended to the deployment's output
+  file according to the deployment's `output_action` (default
+  `append_row` writes to `predictions.csv`).
+
+### Command component (`score_component.py`)
+
+Used by `component.yaml`, invoked as part of a pipeline job.
+Runs as a plain Python process.
+
+- Standard CLI script — you define your own `argparse` for whatever
+  inputs/outputs the component declares.
+- No `init()` / `run()` indirection. Reads the input file, writes the
+  output folder, exits.
+- This is what you want for pipeline steps, one-off training, and any
+  "command-line" workload.
+
+**Failure signal that you're using the wrong one:** if a batch job fails
+in `user_logs/std_log_0.txt` with `main.py: error: unrecognized
+arguments: --model ... --batch_endpoint_enabled True ...`, your scoring
+script is using the Command Component contract (argparse) but the
+deployment is calling it via PRS. Either swap to `init()`/`run()`, or
+convert the workload to a pipeline job with a command component.
+
 ## Troubleshooting
 
 | Symptom | Likely cause / fix |
@@ -278,6 +321,8 @@ for that specific log.
 | Deployment fails reading the input | Cluster's managed identity is missing `Storage Blob Data Contributor` — see Prerequisites step 5. |
 | Batch job fails at startup with "Failed to create table/queue ... authorization failure" or "private network" error | Cluster's managed identity is missing `Storage Table Data Contributor` and/or `Storage Queue Data Contributor`. Azure ML's parallel-run engine needs both. See Prerequisites step 5. |
 | `.git/` or other local junk ends up in the deployment's code snapshot | `.gitignore` is honored by Azure ML uploads but does NOT exclude `.git/` itself. The included `.amlignore` is the right place to list everything that should be skipped from the code snapshot. |
+| Batch job fails in `user_logs/std_log_0.txt` with `main.py: error: unrecognized arguments: --model ... --batch_endpoint_enabled True ...` | The scoring script is using the Command Component contract (argparse) instead of the PRS contract (`init()` + `run()`). See **Two different scoring contracts** above. `score.py` in this repo is PRS-style; `score_component.py` is Command-Component-style. |
+| Preflight RBAC check silently skipped | Run `pip install -r requirements.txt` to install `pyyaml` and `azure-mgmt-authorization`. Without them the preflight `import` fails and the check is bypassed. |
 | `INPUT_DATA_ASSET` not found | Register the asset (Prerequisites step 4) or update `.env` to point at one that exists. |
 | Endpoint name collisions | Endpoint names are auto-generated per run; you'll only see collisions if you set the same suffix manually. Bump `BATCH_ENDPOINT_PREFIX` if needed. |
 | Orphan endpoints from interrupted runs | `python cleanup_batch_endpoints.py --dry-run` to inspect, then drop `--dry-run` to delete. |
@@ -301,3 +346,15 @@ for that specific log.
   requires both `logging_enable=True` on the client *and* a DEBUG-level
   `azure` logger with a handler attached. Don't remove either or bodies
   will silently get redacted.
+- `score.py` and `score_component.py` are **not interchangeable**. They
+  follow two different Azure ML contracts (PRS `init()`/`run()` vs
+  Command Component argparse). Mixing them up is a silent failure: the
+  SDK calls all succeed, the batch job appears to start, but
+  `user_logs/std_log_0.txt` shows `unrecognized arguments: --model
+  --batch_endpoint_enabled True ...`. See "Two different scoring
+  contracts" above before changing either script.
+- Storage RBAC for the cluster's managed identity needs **all four**
+  roles (Blob/File/Table/Queue Data Contributor). Missing Table or
+  Queue causes silent batch-job failures that don't show up in the
+  HTTP profiling log. `invoke_batch_endpoint.py` runs a preflight check
+  for this and points to `file1.ps1`; never disable the preflight check.

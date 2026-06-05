@@ -9,7 +9,7 @@ version: 3
 code: ./
 
 command: >-
-  python score.py
+  python score_component.py
   --input_data ${{inputs.input_data}}
   --output_predictions ${{outputs.output_predictions}}
 
