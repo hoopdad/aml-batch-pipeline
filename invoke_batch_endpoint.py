@@ -237,6 +237,107 @@ ml_client = MLClient(
 )
 
 # ============================================================
+# PREFLIGHT: verify the compute cluster's managed identity has the
+# Storage roles required for batch scoring jobs to start successfully.
+#
+# Why this matters: if Table or Queue Data Contributor are missing,
+# the SDK calls (create endpoint, create deployment, invoke, poll)
+# all succeed with 200/201/202, but the batch job itself fails at
+# startup ~5-10 minutes later with a misleading "private network /
+# authorization failure" error inside the parallel-run engine. The
+# HTTP profiling log shows nothing wrong. Failing here (in ~2 sec)
+# saves a lot of confusion.
+# ============================================================
+
+REQUIRED_CLUSTER_ROLES = {
+    "Storage Blob Data Contributor",             # inputs/outputs
+    "Storage File Data Privileged Contributor",  # workspace file share
+    "Storage Table Data Contributor",            # parallel-run engine tracking
+    "Storage Queue Data Contributor",            # parallel-run engine coordination
+}
+
+
+def _preflight_check_cluster_rbac():
+    """Best-effort check that the deployment cluster's MI has the four
+    Storage roles batch scoring needs. Aborts with a clear remediation
+    pointer if any are missing. Silently skips if anything about the
+    lookup fails (e.g. permission to read role assignments), since the
+    real failure (the job itself) is still visible downstream."""
+    try:
+        # Read the cluster name out of the deployment YAML
+        import yaml
+        with open(BATCH_DEPLOYMENT_YAML, "r", encoding="utf-8") as f:
+            dep_yaml = yaml.safe_load(f) or {}
+        compute_ref = dep_yaml.get("compute", "")
+        # Format is "azureml:<cluster-name>" or "azureml:<cluster-name>:<ver>"
+        cluster_name = compute_ref.split(":")[1] if ":" in compute_ref else compute_ref
+        if not cluster_name:
+            print("Preflight: could not parse compute cluster from "
+                  f"'{BATCH_DEPLOYMENT_YAML}'; skipping RBAC check.")
+            return
+
+        # Look up cluster MI principal id + workspace storage account scope
+        cluster = ml_client.compute.get(cluster_name)
+        principal_id = getattr(getattr(cluster, "identity", None), "principal_id", None)
+        if not principal_id:
+            print(f"Preflight: cluster '{cluster_name}' has no system-assigned "
+                  "managed identity; skipping RBAC check. Enable it with:\n"
+                  f"  az ml compute update --name {cluster_name} "
+                  f"--resource-group {RESOURCE_GROUP} "
+                  f"--workspace-name {WORKSPACE_NAME} --identity-type SystemAssigned")
+            return
+
+        ws = ml_client.workspaces.get(WORKSPACE_NAME)
+        storage_scope = ws.storage_account
+
+        # Use the Authorization Management client to list role assignments
+        from azure.mgmt.authorization import AuthorizationManagementClient
+        auth_client = AuthorizationManagementClient(credential, SUBSCRIPTION_ID)
+        assignments = list(auth_client.role_assignments.list_for_scope(
+            scope=storage_scope,
+            filter=f"principalId eq '{principal_id}'"
+        ))
+        # Map role definition IDs to names
+        present = set()
+        for a in assignments:
+            try:
+                rd = auth_client.role_definitions.get_by_id(a.role_definition_id)
+                present.add(rd.role_name)
+            except Exception:
+                pass
+
+        missing = REQUIRED_CLUSTER_ROLES - present
+        if missing:
+            print()
+            print("=" * 60)
+            print("PREFLIGHT FAILURE: cluster managed identity is missing required Storage roles.")
+            print("=" * 60)
+            print(f"Cluster:        {cluster_name}")
+            print(f"Principal ID:   {principal_id}")
+            print(f"Storage scope:  {storage_scope}")
+            print(f"Missing roles:  {', '.join(sorted(missing))}")
+            print()
+            print("Without these, the batch job will appear to submit successfully")
+            print("but fail at startup ~5-10 minutes later with a misleading")
+            print("'private network / authorization failure' error.")
+            print()
+            print("Fix by running the included setup script:")
+            print(f"  .\\file1.ps1 -Cluster {cluster_name}")
+            sys.exit(3)
+        else:
+            print(f"Preflight OK: cluster '{cluster_name}' has all 4 required Storage roles.")
+    except SystemExit:
+        raise
+    except ImportError as exc:
+        print(f"Preflight: skipping RBAC check ({exc}). "
+              "Install pyyaml + azure-mgmt-authorization to enable it.")
+    except Exception as exc:
+        print(f"Preflight: RBAC check skipped due to error: {exc}")
+
+
+_preflight_check_cluster_rbac()
+
+# ============================================================
 # CREATE BATCH ENDPOINT  (== az ml batch-endpoint create --file batch-endpoint.yml)
 # ============================================================
 

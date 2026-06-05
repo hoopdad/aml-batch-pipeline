@@ -22,6 +22,7 @@ Useful when you want to:
 ├── invoke_batch_endpoint.py     # main: create endpoint+deployment, invoke, poll, cleanup
 ├── cleanup_batch_endpoints.py   # one-shot: delete every batch endpoint in the workspace
 ├── analyze.ps1                  # post-run: turn an HTTP log into a markdown report via copilot CLI
+├── file1.ps1                    # one-time setup: grant cluster MI the four Storage roles batch scoring needs
 │
 ├── score.py                     # toy scoring script: stamps "approved" on every row
 ├── component.yaml               # AML component definition for score.py
@@ -122,7 +123,19 @@ Copy-Item batch-deployment.yml.template batch-deployment.yml
 # 3. Open .env in an editor and fill in the four real values
 #    (subscription id, resource group, workspace name, and optionally
 #    your input data asset name if you registered it under a different name).
+
+# 4. Grant the compute cluster's managed identity the four Storage roles
+#    batch scoring requires (Blob/File/Table/Queue Data Contributor). This
+#    is the single most common reason new workspaces fail batch jobs:
+.\file1.ps1 -Cluster cpu-cluster
 ```
+
+`file1.ps1` is idempotent — re-running it on an already-configured cluster
+just confirms each role is assigned and exits cleanly. Skipping it leads
+to jobs that *appear* to submit successfully but fail at startup ~5-10
+minutes later with a misleading "private network / authorization failure"
+error. `invoke_batch_endpoint.py` performs a preflight check at startup
+that catches this and points you back here.
 
 The two `*.yml` files normally don't need editing — `invoke_batch_endpoint.py`
 overrides the endpoint/deployment names at runtime. Edit them only if you
