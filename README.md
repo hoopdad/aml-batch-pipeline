@@ -1,4 +1,6 @@
-# hello_component — Azure ML Batch Endpoint Test Harness
+# Azure ML Batch Endpoint Test Harness
+
+NOTE: NOT PRODUCTION SAFE. FOR TROUBLESHOOTING IN DEV ONLY
 
 A minimal, self-contained sandbox for **end-to-end testing of Azure Machine
 Learning batch endpoints**. Each run creates a fresh endpoint + deployment,
